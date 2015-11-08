@@ -1,0 +1,11 @@
+inherit_from:
+  - .rubocop_todo.yml
+
+Documentation:
+  Enabled: false
+
+GuardClause:
+  Enabled: false
+
+IfUnlessModifier:
+  Enabled: false

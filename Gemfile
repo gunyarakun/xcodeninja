@@ -1,3 +1,8 @@
 source 'https://rubygems.org'
 
-gem 'xcodeproj'
+gemspec
+
+group :development do
+  gem 'simplecov'
+  gem 'rubocop'
+end

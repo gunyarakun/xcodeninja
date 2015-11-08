@@ -11,4 +11,4 @@ Thumbs.db
 # Ruby
 Gemfile.lock
 .ruby-version
-.rbenv-gemset
+.rbenv-gemsets
