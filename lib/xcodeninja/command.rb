@@ -85,7 +85,7 @@ rule cp_r
   command = cp -R ${in} ${out}
 
 rule file_packager
-  command = python ${EMSCRIPTEN}/tools/file_packager.py #{target.name} --preload #{build_dir(target)}@/ > #{build_dir(target)}/ManboData.js
+  command = python #{ENV['EMSCRIPTEN']}/tools/file_packager.py #{target.name} --preload #{build_dir(target)}@/ > #{build_dir(target)}/ManboData.js
 RULES
       r
     end
@@ -150,7 +150,7 @@ RULES
         :outputs => [infoplist],
         :rule_name => 'cp_r',
         # TODO fix Info.plist path
-        :inputs => ['Resources/Info.plist'],
+        :inputs => [File.join(target.product_name, 'Resources/Info.plist')],
       }
 
       # UIKit bundle
