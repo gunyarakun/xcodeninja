@@ -82,10 +82,10 @@ rule ibtool
   command = ibtool --errors --warnings --notices --module #{target.product_name} --target-device iphone --minimum-deployment-target 9.0 --output-format human-readable-text --compilation-directory `dirname ${out}` ${in} && ibtool --errors --warnings --notices --module #{target.product_name} --target-device iphone --minimum-deployment-target 9.0 --output-format human-readable-text --link #{resources_dir(target)} ${out}
 
 rule cp_r
-  command = cp -R ${in} ${out}
+  command = cp -r ${in} ${out}
 
 rule file_packager
-  command = python #{ENV['EMSCRIPTEN']}/tools/file_packager.py #{target.name} --preload #{build_dir(target)}@/ > #{build_dir(target)}/ManboData.js
+  command = python #{ENV['EMSCRIPTEN']}/tools/file_packager.py ${out} --preload #{build_dir(target)}@/ > #{build_dir(target)}/ManboData.js
 RULES
       r
     end
@@ -154,7 +154,6 @@ RULES
       }
 
       # UIKit bundle
-      # FIXME: split
       builds << {
         :outputs => ["#{build_dir(target)}/frameworks/UIKit.framework/"],
         :rule_name => 'cp_r',
