@@ -28,46 +28,35 @@ module XcodeNinja
         fail Informative, 'Please specify Xcode project.'
       end
 
-      header_dirs = xcodeproj.main_group.recursive_children.select { |g| g.path && File.extname(g.path) == '.h' }.map{ |g|
-        full_path = File.join((g.parents + [g]).map{ |group| group.path }.select{ |path| path })
-        File.dirname(full_path)
-      }.to_a.uniq
-
       xcodeproj.targets.each do |target|
-        build_configurations = target.build_configurations
-        build_configurations.each do |bc|
-          bs = bc.build_settings
-          lib_dirs = expand(bs['LIBRARY_SEARCH_PATHS'], :array)
-          framework_dirs = expand(bs['FRAMEWORK_SEARCH_PATHS'], :array)
-          target_header_dirs = expand(bs['HEADER_SEARCH_PATHS'], :array)
+        target.build_configurations.each do |build_config|
+          builds = target.build_phases.map do |phase|
+            case phase
+            when Xcodeproj::Project::Object::PBXResourcesBuildPhase
+              resources_build_phase(xcodeproj, target, build_config, phase)
+            when Xcodeproj::Project::Object::PBXSourcesBuildPhase
+              sources_build_phase(xcodeproj, target, build_config, phase)
+            when Xcodeproj::Project::Object::PBXFrameworksBuildPhase
+              frameworks_build_phase(xcodeproj, target, build_config, phase)
+            when Xcodeproj::Project::Object::PBXShellScriptBuildPhase
+              shell_script_build_phase(xcodeproj, target, build_config, phase)
+            else
+              fail Informative, "Don't support the phase #{phase.class.name}."
+            end
+          end.flatten.compact
 
-          lib_options = lib_dirs.map { |dir| "-L#{dir}" }.join(' ')
-          framework_options = (framework_dirs.map { |f| "-F#{f}" } + REFERENCE_FRAMEWORKS.map{ |f| "-framework #{f}" }).join(' ')
-          header_options = (header_dirs + target_header_dirs).map{ |dir| "-I./#{dir}" }.join(' ')
-
-        end
-
-        builds = target.build_phases.map do |phase|
-          case phase
-          when Xcodeproj::Project::Object::PBXResourcesBuildPhase
-            resources_build_phase(target, phase)
-          when Xcodeproj::Project::Object::PBXSourcesBuildPhase
-            sources_build_phase(target, phase)
-          when Xcodeproj::Project::Object::PBXFrameworksBuildPhase
-            frameworks_build_phase(target, phase)
-          when Xcodeproj::Project::Object::PBXShellScriptBuildPhase
-            shell_script_build_phase(target, phase)
-          else
-            fail Informative, "Don't support the phase #{phase.class.name}."
-          end
-        end.flatten.compact
-
-        File.open("#{target.name}.ninja.build", 'w:UTF-8') do |f|
-          f.puts rules(target)
-          f.puts ''
-          builds.each do |b|
-            f.puts "build #{b[:outputs].join(' ')}: #{b[:rule_name]} #{b[:inputs].join(' ')}"
+          File.open("#{target.name}.#{build_config.name}.ninja.build", 'w:UTF-8') do |f|
+            f.puts rules(target)
             f.puts ''
+            builds.each do |b|
+              f.puts "build #{b[:outputs].join(' ')}: #{b[:rule_name]} #{b[:inputs].join(' ')}"
+              if b[:variables]
+                b[:variables].each {|k, v|
+                  f.puts "  #{k} = #{v}"
+                }
+              end
+              f.puts ''
+            end
           end
         end
       end
@@ -83,6 +72,12 @@ rule ibtool_compile
 
 rule ibtool_link
   command = ibtool --errors --warnings --notices --module #{target.product_name} --target-device iphone --minimum-deployment-target 9.0 --output-format human-readable-text --link `dirname ${out}` ${in}
+
+rule cc
+  command = a2o ${cflags} -c ${source} -o ${out}
+
+rule link
+  command = llvm-link -o ${out} ${in}
 
 rule cp_r
   command = cp -r ${in} ${out}
@@ -105,11 +100,19 @@ RULES
       "#{bundle_dir(target)}/Resources"
     end
 
+    def objects_dir(target)
+      "#{build_dir(target)}/objects"
+    end
+
     def data_path(target)
       "#{build_dir(target)}/#{target.product_name}.dat"
     end
 
-    def resources_build_phase(target, phase)
+    def binary_path(target)
+      "#{build_dir(target)}/#{target.product_name}.bc"
+    end
+
+    def resources_build_phase(xcodeproj, target, build_config, phase)
       builds = []
       resources = []
       phase.files_references.each do |file|
@@ -178,21 +181,77 @@ RULES
       builds
     end
 
-    def sources_build_phase(target, phase)
+    def sources_build_phase(xcodeproj, target, build_config, phase)
+      # FIXME: Implement
+      builds = []
+      objects = []
+
+      header_dirs = xcodeproj.main_group.recursive_children.select { |g| g.path && File.extname(g.path) == '.h' }.map{ |g|
+        full_path = File.join((g.parents + [g]).map{ |group| group.path }.select{ |path| path })
+        File.dirname(full_path)
+      }.to_a.uniq
+
+      # build settings
+      bs = build_config.build_settings
+      lib_dirs = expand(bs['LIBRARY_SEARCH_PATHS'], :array)
+      framework_dirs = expand(bs['FRAMEWORK_SEARCH_PATHS'], :array)
+      target_header_dirs = expand(bs['HEADER_SEARCH_PATHS'], :array)
+
+      lib_options = lib_dirs.map { |dir| "-L#{dir}" }.join(' ')
+      framework_options = (framework_dirs.map { |f| "-F#{f}" } + REFERENCE_FRAMEWORKS.map{ |f| "-framework #{f}" }).join(' ')
+      header_options = (header_dirs + target_header_dirs).map{ |dir| "-I./#{dir}" }.join(' ')
+
+      # build sources
+      phase.files_references.each do |file|
+        path = File.join(file.parents.map{ |group| group.path }.select{ |path| path }, file.path)
+        object = File.join(objects_dir(target), path.gsub(/\.[A-Za-z0-9]$/, '.o'))
+
+        objects << object
+
+        settings = file.build_files[0].settings
+        # TODO: set default option
+        file_opt = '-s FULL_ES2=1 -O0 -DGL_GLEXT_PROTOTYPES=1 -D__IPHONE_OS_VERSION_MIN_REQUIRED=70000 -D__CC_PLATFORM_IOS=1 -DDEBUG=1 -DCD_DEBUG=0 -DCOCOS2D_DEBUG=0 -DCC_TEXTURE_ATLAS_USE_VAO=0 -Wno-warn-absolute-paths'
+        if settings && settings.has_key?('COMPILER_FLAGS')
+          file_opt += expand(settings['COMPILER_FLAGS'], :array).join(' ')
+        end
+        file_opt += ' -fobjc-arc' unless file_opt =~ /-fno-objc-arc/
+
+        cflags = [framework_options, header_options, lib_options, file_opt].join(' ')
+
+        prefix_pch = "#{target.product_name}/Prefix.pch"
+
+        builds << {
+          :outputs => [object],
+          :rule_name => 'cc',
+          # FIXME: fetch pch path from xcodeproj
+          :inputs => [path, prefix_pch],
+          :variables => {
+            'cflags' => "#{cflags} -include #{prefix_pch}",
+            'source' => path,
+          }
+        }
+      end
+
+      # link
+      builds << {
+        :outputs => [binary_path(target)],
+        :rule_name => 'link',
+        :inputs => objects
+      }
+
+      builds
+    end
+
+    def frameworks_build_phase(xcodeproj, target, build_config, phase)
       # FIXME: Implement
     end
 
-    def frameworks_build_phase(target, phase)
-      # FIXME: Implement
-    end
-
-    def shell_script_build_phase(target, phase)
+    def shell_script_build_phase(xcodeproj, target, build_config, phase)
       # FIXME: Implement
     end
 
     def expand(value, type=nil)
-      # TODO: Expand $(TARGET_NAME) etc.
-      if value.kind_of?(Enumerable)
+      if value.kind_of?(Array)
         value.reject do |v|
           v == '$(inherited)'
         end.map do |v|
@@ -203,25 +262,29 @@ RULES
         when :bool
           value == 'YES'
         when :array
-          if value.kind_of?(Array)
-            value
-          elsif value.nil?
+          if value.nil?
             []
           else
-            [value]
+            [expand(value)]
           end
         else
           if value.nil?
             nil
           else
-            value.gsub(/$\(([A-Za-z0-9_])\)/) do |m|
-              case m[1]
-              when 'PROJECT_DIR'
+            value.gsub(/\$\([A-Za-z0-9_]+\)/) do |m|
+              case m
+              when '$(PROJECT_DIR)'
                 xcodeproj_dir
+              when '$(SDKROOT)'
+                # FIXME: currently ignores
+                ''
+              when '$(DEVELOPER_FRAMEWORKS_DIR)'
+                # FIXME: currently ignores
+                ''
               else
-                fail Informative, "Not support for #{m[1]}"
+                fail Informative, "Not support for #{m}"
               end
-          end
+            end
           end
         end
       end
