@@ -78,8 +78,11 @@ module XcodeNinja
     def rules(target)
       # TODO: extract minimum-deployment-target from xcodeproj
       r = <<RULES
-rule ibtool
-  command = ibtool --errors --warnings --notices --module #{target.product_name} --target-device iphone --minimum-deployment-target 9.0 --output-format human-readable-text --compilation-directory `dirname ${out}` ${in} && ibtool --errors --warnings --notices --module #{target.product_name} --target-device iphone --minimum-deployment-target 9.0 --output-format human-readable-text --link #{resources_dir(target)} ${out}
+rule ibtool_compile
+  command = ibtool --errors --warnings --notices --module #{target.product_name} --target-device iphone --minimum-deployment-target 9.0 --output-format human-readable-text --compilation-directory `dirname ${out}` ${in}
+
+rule ibtool_link
+  command = ibtool --errors --warnings --notices --module #{target.product_name} --target-device iphone --minimum-deployment-target 9.0 --output-format human-readable-text --link `dirname ${out}` ${in}
 
 rule cp_r
   command = cp -r ${in} ${out}
@@ -126,12 +129,17 @@ RULES
           #p remote_path, local_path
           if File.extname(file.path) == '.storyboard'
             remote_path += 'c'
+            tmp_path = File.join('tmp', remote_path)
             builds << {
-              :outputs => [remote_path],
-              :rule_name => 'ibtool',
+              :outputs => [tmp_path],
+              :rule_name => 'ibtool_compile',
               :inputs => [local_path],
             }
-            [remote_path, 'ibtool', [local_path]]
+            builds << {
+              :outputs => [remote_path],
+              :rule_name => 'ibtool_link',
+              :inputs => [tmp_path],
+            }
           else
             builds << {
               :outputs => [remote_path],
