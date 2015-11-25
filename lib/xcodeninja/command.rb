@@ -264,7 +264,7 @@ RULES
       # build sources
       phase.files_references.each do |file|
         source_path = File.join(file.parents.map(&:path).select { |path| path }, file.path)
-        object = File.join(objects_dir(target, build_config), source_path.gsub(/\.[A-Za-z0-9]$/, '.o'))
+        object = File.join(objects_dir(target, build_config), source_path.gsub(/\.[A-Za-z0-9]+$/, '.o'))
 
         objects << object
 
@@ -292,7 +292,7 @@ RULES
       # stubs
       # FIXME: remove
       %w(AidAd_dummy.m Parse_dummy.m).each do |source_path|
-        object = File.join(objects_dir(target, build_config), source_path.gsub(/\.[A-Za-z0-9]$/, '.o'))
+        object = File.join(objects_dir(target, build_config), source_path.gsub(/\.[A-Za-z0-9]+$/, '.o'))
         objects << object
 
         cflags = [framework_dir_options, framework_ref_options, header_options, lib_options].join(' ')
