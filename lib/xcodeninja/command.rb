@@ -38,9 +38,15 @@ module XcodeNinja
       end
     end
 
+    private
+
     def generate_ninja_build(xcodeproj, target, build_config)
-      # generate build rules
-      builds = target.build_phases.map do |phase|
+      builds = generate_build_rules(xcodeproj, target, build_config)
+      write_ninja_build(targer, build_config, builds)
+    end
+
+    def generate_build_rules(xcodeproj, target, build_config)
+      target.build_phases.map do |phase|
         case phase
         when Xcodeproj::Project::Object::PBXResourcesBuildPhase
           resources_build_phase(xcodeproj, target, build_config, phase)
@@ -54,24 +60,22 @@ module XcodeNinja
           fail Informative, "Don't support the phase #{phase.class.name}."
         end
       end.flatten.compact
+    end
 
-      # write to ninja.build
+    def write_ninja_build(target, build_config, builds)
       File.open("#{target.name}.#{build_config.name}.ninja.build", 'w:UTF-8') do |f|
         f.puts rules(target, build_config)
         f.puts ''
         builds.each do |b|
           f.puts "build #{b[:outputs].join(' ')}: #{b[:rule_name]} #{b[:inputs].join(' ')}"
-          if b[:variables]
-            b[:variables].each do |k, v|
-              f.puts "  #{k} = #{v}"
-            end
+          variables = b[:variables] || []
+          variables.each do |k, v|
+            f.puts "  #{k} = #{v}"
           end
           f.puts ''
         end
       end
     end
-
-    private
 
     def rules(target, build_config)
       # TODO: extract minimum-deployment-target from xcodeproj
@@ -220,16 +224,16 @@ RULES
       in_path = Pathname(in_dir)
 
       in_path.find do |path|
-        if path.file?
-          rel_path = path.relative_path_from(in_path)
-          output_path = File.join(out_dir, rel_path.to_s)
-          builds << {
-            outputs: [output_path],
-            rule_name: 'cp_r',
-            inputs: [path.to_s],
-          }
-          outputs << output_path
-        end
+        next unless path.file?
+
+        rel_path = path.relative_path_from(in_path)
+        output_path = File.join(out_dir, rel_path.to_s)
+        builds << {
+          outputs: [output_path],
+          rule_name: 'cp_r',
+          inputs: [path.to_s],
+        }
+        outputs << output_path
       end
 
       {
