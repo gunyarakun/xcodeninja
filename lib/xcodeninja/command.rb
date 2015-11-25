@@ -30,34 +30,40 @@ module XcodeNinja
 
       xcodeproj.targets.each do |target|
         target.build_configurations.each do |build_config|
-          builds = target.build_phases.map do |phase|
-            case phase
-            when Xcodeproj::Project::Object::PBXResourcesBuildPhase
-              resources_build_phase(xcodeproj, target, build_config, phase)
-            when Xcodeproj::Project::Object::PBXSourcesBuildPhase
-              sources_build_phase(xcodeproj, target, build_config, phase)
-            when Xcodeproj::Project::Object::PBXFrameworksBuildPhase
-              frameworks_build_phase(xcodeproj, target, build_config, phase)
-            when Xcodeproj::Project::Object::PBXShellScriptBuildPhase
-              shell_script_build_phase(xcodeproj, target, build_config, phase)
-            else
-              fail Informative, "Don't support the phase #{phase.class.name}."
-            end
-          end.flatten.compact
+          generate_ninja_build(xcodeproj, target, build_config)
+        end
+      end
+    end
 
-          File.open("#{target.name}.#{build_config.name}.ninja.build", 'w:UTF-8') do |f|
-            f.puts rules(target, build_config)
-            f.puts ''
-            builds.each do |b|
-              f.puts "build #{b[:outputs].join(' ')}: #{b[:rule_name]} #{b[:inputs].join(' ')}"
-              if b[:variables]
-                b[:variables].each do |k, v|
-                  f.puts "  #{k} = #{v}"
-                end
-              end
-              f.puts ''
+    def generate_ninja_build(xcodeproj, target, build_config)
+      # generate build rules
+      builds = target.build_phases.map do |phase|
+        case phase
+        when Xcodeproj::Project::Object::PBXResourcesBuildPhase
+          resources_build_phase(xcodeproj, target, build_config, phase)
+        when Xcodeproj::Project::Object::PBXSourcesBuildPhase
+          sources_build_phase(xcodeproj, target, build_config, phase)
+        when Xcodeproj::Project::Object::PBXFrameworksBuildPhase
+          frameworks_build_phase(xcodeproj, target, build_config, phase)
+        when Xcodeproj::Project::Object::PBXShellScriptBuildPhase
+          shell_script_build_phase(xcodeproj, target, build_config, phase)
+        else
+          fail Informative, "Don't support the phase #{phase.class.name}."
+        end
+      end.flatten.compact
+
+      # write to ninja.build
+      File.open("#{target.name}.#{build_config.name}.ninja.build", 'w:UTF-8') do |f|
+        f.puts rules(target, build_config)
+        f.puts ''
+        builds.each do |b|
+          f.puts "build #{b[:outputs].join(' ')}: #{b[:rule_name]} #{b[:inputs].join(' ')}"
+          if b[:variables]
+            b[:variables].each do |k, v|
+              f.puts "  #{k} = #{v}"
             end
           end
+          f.puts ''
         end
       end
     end
@@ -83,7 +89,10 @@ rule cp_r
   command = cp -r ${in} ${out}
 
 rule file_packager
-  command = python #{ENV['EMSCRIPTEN']}/tools/file_packager.py ${out} --preload #{build_dir(target, build_config)}@/ > #{build_dir(target, build_config)}/ManboData.js
+  command = python #{ENV['EMSCRIPTEN']}/tools/file_packager.py ${target} --preload #{build_dir(target, build_config)}@/ --js-output=${js_output}
+
+rule emscripten_html
+  command = EMCC_DEBUG=1 a2o -v -s TOTAL_MEMORY=402653184 ${framework_ref_options} ${librarie_options} -s NATIVE_LIBDISPATCH=1 --emrun -o ${out} ${linked_objects} --pre-js ${pre_js} # --pre-js mem_check.js
 RULES
       r
     end
@@ -106,6 +115,14 @@ RULES
 
     def data_path(target, build_config)
       "#{build_dir(target, build_config)}/#{target.product_name}.dat"
+    end
+
+    def data_js_path(target, build_config)
+      "#{build_dir(target, build_config)}/#{target.product_name}Data.js"
+    end
+
+    def html_path(target, build_config)
+      "#{build_dir(target, build_config)}/#{target.product_name}.html"
     end
 
     def binary_path(target, build_config)
@@ -171,10 +188,17 @@ RULES
       }
       resources << "#{build_dir(target, build_config)}/frameworks/UIKit.framework/"
 
+      # file_packager
+      t = data_path(target, build_config)
+      j = data_js_path(target, build_config)
       builds << {
-        outputs: [data_path(target, build_config)],
+        outputs: [t, j],
         rule_name: 'file_packager',
         inputs: resources,
+        variables: {
+          'target' => t,
+          'js_output' => j,
+        }
       }
 
       builds
@@ -197,13 +221,14 @@ RULES
       target_header_dirs = expand(bs['HEADER_SEARCH_PATHS'], :array)
 
       lib_options = lib_dirs.map { |dir| "-L#{dir}" }.join(' ')
-      framework_options = (framework_dirs.map { |f| "-F#{f}" } + REFERENCE_FRAMEWORKS.map { |f| "-framework #{f}" }).join(' ')
+      framework_dir_options = framework_dirs.map { |f| "-F#{f}" }.join(' ')
+      framework_ref_options = REFERENCE_FRAMEWORKS.map { |f| "-framework #{f}" }.join(' ')
       header_options = (header_dirs + target_header_dirs).map { |dir| "-I./#{dir}" }.join(' ')
 
       # build sources
       phase.files_references.each do |file|
         source_path = File.join(file.parents.map(&:path).select { |path| path }, file.path)
-        object = File.join(objects_dir(target, build_config), path.gsub(/\.[A-Za-z0-9]$/, '.o'))
+        object = File.join(objects_dir(target, build_config), source_path.gsub(/\.[A-Za-z0-9]$/, '.o'))
 
         objects << object
 
@@ -215,7 +240,7 @@ RULES
         end
         file_opt += ' -fobjc-arc' unless file_opt =~ /-fno-objc-arc/
 
-        cflags = [framework_options, header_options, lib_options, file_opt].join(' ')
+        cflags = [framework_dir_options, framework_ref_options, header_options, lib_options, file_opt].join(' ')
 
         prefix_pch = "#{target.product_name}/Prefix.pch"
 
@@ -236,6 +261,19 @@ RULES
         outputs: [binary_path(target, build_config)],
         rule_name: 'link',
         inputs: objects
+      }
+
+      # executable
+      builds << {
+        outputs: [html_path(target, build_config)],
+        rule_name: 'emscripten_html',
+        inputs: [data_js_path(target, build_config)],
+        variables: {
+          'pre_js' => data_js_path(target, build_config),
+          'linked_objects' => binary_path(target, build_config),
+          'framework_ref_options' => framework_ref_options,
+          'lib_options' => lib_options,
+        }
       }
 
       builds
