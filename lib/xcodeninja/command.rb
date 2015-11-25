@@ -1,7 +1,9 @@
 module XcodeNinja
   require 'xcodeproj'
+  require 'pathname'
   require 'colored'
   require 'claide'
+
   require 'pp' # for debug
 
   REFERENCE_FRAMEWORKS = %w(UIKit Security ImageIO GoogleMobileAds CoreGraphics)
@@ -89,7 +91,7 @@ rule cp_r
   command = cp -r ${in} ${out}
 
 rule file_packager
-  command = python #{ENV['EMSCRIPTEN']}/tools/file_packager.py ${target} --preload #{build_dir(target, build_config)}@/ --js-output=${js_output}
+  command = python #{ENV['EMSCRIPTEN']}/tools/file_packager.py ${target} --preload #{packager_target_dir(target, build_config)}@/ --js-output=${js_output}
 
 rule emscripten_html
   command = EMCC_DEBUG=1 a2o -v -s TOTAL_MEMORY=402653184 ${framework_ref_options} ${librarie_options} -s NATIVE_LIBDISPATCH=1 --emrun -o ${out} ${linked_objects} --pre-js ${pre_js} # --pre-js mem_check.js
@@ -101,8 +103,16 @@ RULES
       "build/#{target.name}/#{build_config.name}"
     end
 
+    def packager_target_dir(target, build_config)
+      "#{build_dir(target, build_config)}/package"
+    end
+
     def bundle_dir(target, build_config)
-      "#{build_dir(target, build_config)}/Contents"
+      "#{packager_target_dir(target, build_config)}/Contents"
+    end
+
+    def framework_bundle_dir(target, build_config)
+      "#{packager_target_dir(target, build_config)}/frameworks"
     end
 
     def resources_dir(target, build_config)
@@ -170,6 +180,7 @@ RULES
           resources << remote_path
         end
       end
+
       infoplist = File.join(bundle_dir(target, build_config), 'Info.plist')
       resources << infoplist
 
@@ -181,12 +192,9 @@ RULES
       }
 
       # UIKit bundle
-      builds << {
-        outputs: ["#{build_dir(target, build_config)}/frameworks/UIKit.framework/"],
-        rule_name: 'cp_r',
-        inputs: ["#{ENV['EMSCRIPTEN']}/system/frameworks/UIKit.framework/Resources/"],
-      }
-      resources << "#{build_dir(target, build_config)}/frameworks/UIKit.framework/"
+      framework_resources = file_recursive_copy("#{ENV['EMSCRIPTEN']}/system/frameworks/UIKit.framework/Resources/", "#{framework_bundle_dir(target, build_config)}/UIKit.framework/Resources/")
+      builds += framework_resources[:builds]
+      resources += framework_resources[:outputs]
 
       # file_packager
       t = data_path(target, build_config)
@@ -202,6 +210,31 @@ RULES
       }
 
       builds
+    end
+
+    def file_recursive_copy(in_dir, out_dir)
+      builds = []
+      outputs = []
+
+      in_path = Pathname(in_dir)
+
+      in_path.find do |path|
+        if path.file?
+          rel_path = path.relative_path_from(in_path)
+          output_path = File.join(out_dir, rel_path.to_s)
+          builds << {
+            outputs: [output_path],
+            rule_name: 'cp_r',
+            inputs: [path.to_s],
+          }
+          outputs << output_path
+        end
+      end
+
+      {
+        builds: builds,
+        outputs: outputs,
+      }
     end
 
     def sources_build_phase(xcodeproj, target, build_config, phase)
@@ -225,6 +258,9 @@ RULES
       framework_ref_options = REFERENCE_FRAMEWORKS.map { |f| "-framework #{f}" }.join(' ')
       header_options = (header_dirs + target_header_dirs).map { |dir| "-I./#{dir}" }.join(' ')
 
+      # FIXME: fetch pch path from xcodeproj
+      prefix_pch = "#{target.product_name}/Prefix.pch"
+
       # build sources
       phase.files_references.each do |file|
         source_path = File.join(file.parents.map(&:path).select { |path| path }, file.path)
@@ -242,12 +278,28 @@ RULES
 
         cflags = [framework_dir_options, framework_ref_options, header_options, lib_options, file_opt].join(' ')
 
-        prefix_pch = "#{target.product_name}/Prefix.pch"
+        builds << {
+          outputs: [object],
+          rule_name: 'cc',
+          inputs: [source_path, prefix_pch],
+          variables: {
+            'cflags' => "#{cflags} -include #{prefix_pch}",
+            'source' => source_path,
+          }
+        }
+      end
+
+      # stubs
+      # FIXME: remove
+      %w(AidAd_dummy.m Parse_dummy.m).each do |source_path|
+        object = File.join(objects_dir(target, build_config), source_path.gsub(/\.[A-Za-z0-9]$/, '.o'))
+        objects << object
+
+        cflags = [framework_dir_options, framework_ref_options, header_options, lib_options].join(' ')
 
         builds << {
           outputs: [object],
           rule_name: 'cc',
-          # FIXME: fetch pch path from xcodeproj
           inputs: [source_path, prefix_pch],
           variables: {
             'cflags' => "#{cflags} -include #{prefix_pch}",
@@ -267,7 +319,7 @@ RULES
       builds << {
         outputs: [html_path(target, build_config)],
         rule_name: 'emscripten_html',
-        inputs: [data_js_path(target, build_config)],
+        inputs: [data_js_path(target, build_config), binary_path(target, build_config)],
         variables: {
           'pre_js' => data_js_path(target, build_config),
           'linked_objects' => binary_path(target, build_config),
