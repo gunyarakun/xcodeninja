@@ -42,7 +42,7 @@ module XcodeNinja
 
     def generate_ninja_build(xcodeproj, target, build_config)
       builds = generate_build_rules(xcodeproj, target, build_config)
-      write_ninja_build(targer, build_config, builds)
+      write_ninja_build(target, build_config, builds)
     end
 
     def generate_build_rules(xcodeproj, target, build_config)
